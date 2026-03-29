@@ -4,11 +4,12 @@ import pandas as pd
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
+import os
 
 app = Flask(__name__)
 
 # -----------------------------
-# Gemini setup
+# Gemini setup (keep key for now)
 # -----------------------------
 genai.configure(api_key="AIzaSyAun80ANH3ykTZpl8oUhbtSE7JJ_qt-HIY")
 model = genai.GenerativeModel("models/gemini-2.5-flash")
@@ -28,7 +29,7 @@ df["transcript"] = df["transcript"].fillna("").astype(str).str.strip()
 df = df[df["transcript"] != ""].reset_index(drop=True)
 
 # -----------------------------
-# Create text file
+# Create text file (optional)
 # -----------------------------
 all_docs = []
 
@@ -65,25 +66,40 @@ TRANSCRIPT:
     })
 
 # -----------------------------
-# Embeddings + FAISS
+# 🔥 LAZY LOADING (IMPORTANT FIX)
 # -----------------------------
-embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+embed_model = None
+index = None
 
-doc_texts = [d["text"] for d in documents]
-doc_embeddings = embed_model.encode(
-    doc_texts,
-    convert_to_numpy=True,
-    normalize_embeddings=True
-)
+def load_models():
+    global embed_model, index
 
-dimension = doc_embeddings.shape[1]
-index = faiss.IndexFlatIP(dimension)
-index.add(doc_embeddings.astype("float32"))
+    if embed_model is None:
+        print("🔄 Loading embedding model...")
+
+        embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+        doc_texts = [d["text"] for d in documents]
+        doc_embeddings = embed_model.encode(
+            doc_texts,
+            convert_to_numpy=True,
+            normalize_embeddings=True
+        )
+
+        dimension = doc_embeddings.shape[1]
+        index_local = faiss.IndexFlatIP(dimension)
+        index_local.add(doc_embeddings.astype("float32"))
+
+        index = index_local
+
+        print("✅ Model + FAISS loaded")
 
 # -----------------------------
 # Retrieval
 # -----------------------------
 def retrieve(query, top_k=3):
+    load_models()  # 🔥 ensures model loads only when needed
+
     q_emb = embed_model.encode(
         [query],
         convert_to_numpy=True,
@@ -152,20 +168,6 @@ Context:
 def home():
     return render_template("index.html")
 
-# @app.route("/chat", methods=["POST"])
-# def chat():
-#     data = request.get_json()
-#     query = data.get("query", "").strip()
-
-#     if not query:
-#         return jsonify({"error": "Query is required"}), 400
-
-#     result = ask_rag(query, top_k=3)
-#     return jsonify(result)
-
-# if __name__ == "__main__":
-#     app.run(debug=True)
-
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.get_json()
@@ -177,10 +179,9 @@ def chat():
     result = ask_rag(query, top_k=3)
     return jsonify(result)
 
-
-# ✅ IMPORTANT FOR DEPLOYMENT
-import os
-
+# -----------------------------
+# Run app (for local only)
+# -----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
