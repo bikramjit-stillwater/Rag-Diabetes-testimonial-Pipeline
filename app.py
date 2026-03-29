@@ -11,94 +11,80 @@ app = Flask(__name__)
 # -----------------------------
 # Gemini setup (keep key for now)
 # -----------------------------
-genai.configure(api_key="AIzaSyAun80ANH3ykTZpl8oUhbtSE7JJ_qt-HIY")
+genai.configure(api_key="AIzaSyBwdKvlWsxyj1ZObCNZiKLA_oSe-YKj-3U")
 model = genai.GenerativeModel("models/gemini-2.5-flash")
 
 # -----------------------------
-# Load CSV
+# 🔥 GLOBALS (IMPORTANT)
 # -----------------------------
-csv_path = "diabetes_testimonials_only.csv"
-
-df = pd.read_csv(csv_path)
-df = df[["title", "url", "transcript"]].copy()
-
-df["title"] = df["title"].fillna("").astype(str).str.strip()
-df["url"] = df["url"].fillna("").astype(str).str.strip()
-df["transcript"] = df["transcript"].fillna("").astype(str).str.strip()
-
-df = df[df["transcript"] != ""].reset_index(drop=True)
+df = None
+documents = None
+embed_model = None
+index = None
 
 # -----------------------------
-# Create text file (optional)
+# 🔥 LAZY LOADING (FULL FIX)
 # -----------------------------
-all_docs = []
+def load_data_and_models():
+    global df, documents, embed_model, index
 
-for i, row in df.iterrows():
-    block = f"""TESTIMONIAL_ID: {i}
-TITLE: {row['title']}
-URL: {row['url']}
-TRANSCRIPT:
-{row['transcript']}
+    if df is None:
+        print("🔄 Loading everything...")
 
-{'='*100}
-"""
-    all_docs.append(block)
+        # Load CSV
+        df_local = pd.read_csv("diabetes_testimonials_only.csv")
+        df_local = df_local[["title", "url", "transcript"]].copy()
 
-with open("all_patient_testimonials.txt", "w", encoding="utf-8") as f:
-    f.write("\n".join(all_docs))
+        df_local["title"] = df_local["title"].fillna("").astype(str).str.strip()
+        df_local["url"] = df_local["url"].fillna("").astype(str).str.strip()
+        df_local["transcript"] = df_local["transcript"].fillna("").astype(str).str.strip()
 
-# -----------------------------
-# Build documents
-# -----------------------------
-documents = []
+        df_local = df_local[df_local["transcript"] != ""].reset_index(drop=True)
 
-for i, row in df.iterrows():
-    doc_text = f"""TITLE: {row['title']}
+        # Build documents
+        docs = []
+        for i, row in df_local.iterrows():
+            doc_text = f"""TITLE: {row['title']}
 URL: {row['url']}
 TRANSCRIPT:
 {row['transcript']}"""
 
-    documents.append({
-        "doc_id": i,
-        "title": row["title"],
-        "url": row["url"],
-        "text": doc_text
-    })
+            docs.append({
+                "doc_id": i,
+                "title": row["title"],
+                "url": row["url"],
+                "text": doc_text
+            })
 
-# -----------------------------
-# 🔥 LAZY LOADING (IMPORTANT FIX)
-# -----------------------------
-embed_model = None
-index = None
+        # Load embedding model
+        embed = SentenceTransformer("all-MiniLM-L6-v2")
 
-def load_models():
-    global embed_model, index
-
-    if embed_model is None:
-        print("🔄 Loading embedding model...")
-
-        embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-
-        doc_texts = [d["text"] for d in documents]
-        doc_embeddings = embed_model.encode(
+        # Create embeddings
+        doc_texts = [d["text"] for d in docs]
+        doc_embeddings = embed.encode(
             doc_texts,
             convert_to_numpy=True,
             normalize_embeddings=True
         )
 
-        dimension = doc_embeddings.shape[1]
-        index_local = faiss.IndexFlatIP(dimension)
-        index_local.add(doc_embeddings.astype("float32"))
+        # Create FAISS index
+        dim = doc_embeddings.shape[1]
+        idx = faiss.IndexFlatIP(dim)
+        idx.add(doc_embeddings.astype("float32"))
 
-        index = index_local
+        # Save globally
+        df = df_local
+        documents = docs
+        embed_model = embed
+        index = idx
 
-        print("✅ Model + FAISS loaded")
+        print("✅ Data + Model + FAISS ready")
 
 # -----------------------------
 # Retrieval
 # -----------------------------
 def retrieve(query, top_k=3):
-    load_models()  # 🔥 ensures model loads only when needed
+    load_data_and_models()
 
     q_emb = embed_model.encode(
         [query],
@@ -109,10 +95,10 @@ def retrieve(query, top_k=3):
     scores, indices = index.search(q_emb, top_k)
 
     results = []
-    for score, idx in zip(scores[0], indices[0]):
-        if idx == -1:
+    for score, idx_val in zip(scores[0], indices[0]):
+        if idx_val == -1:
             continue
-        item = documents[idx].copy()
+        item = documents[idx_val].copy()
         item["score"] = float(score)
         results.append(item)
 
@@ -176,11 +162,11 @@ def chat():
     if not query:
         return jsonify({"error": "Query is required"}), 400
 
-    result = ask_rag(query, top_k=3)
+    result = ask_rag(query)
     return jsonify(result)
 
 # -----------------------------
-# Run app (for local only)
+# Run (local only)
 # -----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
