@@ -5,17 +5,18 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 import os
+import threading
 
 app = Flask(__name__)
 
 # -----------------------------
-# Gemini setup (keep key for now)
+# Gemini setup
 # -----------------------------
-genai.configure(api_key="AIzaSyBwdKvlWsxyj1ZObCNZiKLA_oSe-YKj-3U")
+genai.configure(api_key="AIzaSyATzs0jv1o1kHqn_iE9Aa8WfXCP64rtcLE")
 model = genai.GenerativeModel("models/gemini-2.5-flash")
 
 # -----------------------------
-# 🔥 GLOBALS (IMPORTANT)
+# GLOBALS
 # -----------------------------
 df = None
 documents = None
@@ -23,15 +24,14 @@ embed_model = None
 index = None
 
 # -----------------------------
-# 🔥 LAZY LOADING (FULL FIX)
+# LOAD EVERYTHING (HEAVY)
 # -----------------------------
 def load_data_and_models():
     global df, documents, embed_model, index
 
     if df is None:
-        print("🔄 Loading everything...")
+        print("🔄 Background loading started...")
 
-        # Load CSV
         df_local = pd.read_csv("diabetes_testimonials_only.csv")
         df_local = df_local[["title", "url", "transcript"]].copy()
 
@@ -41,7 +41,6 @@ def load_data_and_models():
 
         df_local = df_local[df_local["transcript"] != ""].reset_index(drop=True)
 
-        # Build documents
         docs = []
         for i, row in df_local.iterrows():
             doc_text = f"""TITLE: {row['title']}
@@ -56,10 +55,8 @@ TRANSCRIPT:
                 "text": doc_text
             })
 
-        # Load embedding model
         embed = SentenceTransformer("all-MiniLM-L6-v2")
 
-        # Create embeddings
         doc_texts = [d["text"] for d in docs]
         doc_embeddings = embed.encode(
             doc_texts,
@@ -67,24 +64,27 @@ TRANSCRIPT:
             normalize_embeddings=True
         )
 
-        # Create FAISS index
         dim = doc_embeddings.shape[1]
         idx = faiss.IndexFlatIP(dim)
         idx.add(doc_embeddings.astype("float32"))
 
-        # Save globally
         df = df_local
         documents = docs
         embed_model = embed
         index = idx
 
-        print("✅ Data + Model + FAISS ready")
+        print("✅ Background loading completed")
 
 # -----------------------------
-# Retrieval
+# RETRIEVE
 # -----------------------------
 def retrieve(query, top_k=3):
-    load_data_and_models()
+
+    # If model not ready yet → wait
+    while embed_model is None or index is None:
+        print("⏳ Waiting for model to load...")
+        import time
+        time.sleep(1)
 
     q_emb = embed_model.encode(
         [query],
@@ -107,8 +107,8 @@ def retrieve(query, top_k=3):
 # -----------------------------
 # RAG
 # -----------------------------
-def ask_rag(query, top_k=3):
-    results = retrieve(query, top_k=top_k)
+def ask_rag(query):
+    results = retrieve(query)
 
     context = "\n\n".join([
         f"""SOURCE {i+1}
@@ -124,10 +124,10 @@ You are a testimonial-based assistant.
 
 Rules:
 1. Answer only from the provided testimonial context.
-2. If the answer is not clearly present, say: "Not found clearly in the testimonials."
+2. If not found, say: "Not found clearly in the testimonials."
 3. Do not give medical advice.
-4. Mention relevant source title and URL.
-5. Keep the answer clear and short.
+4. Mention source title and URL.
+5. Keep answer short.
 
 User question:
 {query}
@@ -148,7 +148,12 @@ Context:
     }
 
 # -----------------------------
-# Routes
+# 🔥 START BACKGROUND LOADING
+# -----------------------------
+threading.Thread(target=load_data_and_models).start()
+
+# -----------------------------
+# ROUTES
 # -----------------------------
 @app.route("/")
 def home():
@@ -166,7 +171,7 @@ def chat():
     return jsonify(result)
 
 # -----------------------------
-# Run (local only)
+# RUN
 # -----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
