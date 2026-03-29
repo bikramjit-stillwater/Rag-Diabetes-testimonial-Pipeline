@@ -152,6 +152,20 @@ Context:
 def home():
     return render_template("index.html")
 
+# @app.route("/chat", methods=["POST"])
+# def chat():
+#     data = request.get_json()
+#     query = data.get("query", "").strip()
+
+#     if not query:
+#         return jsonify({"error": "Query is required"}), 400
+
+#     result = ask_rag(query, top_k=3)
+#     return jsonify(result)
+
+# if __name__ == "__main__":
+#     app.run(debug=True)
+
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.get_json()
@@ -163,5 +177,10 @@ def chat():
     result = ask_rag(query, top_k=3)
     return jsonify(result)
 
+
+# ✅ IMPORTANT FOR DEPLOYMENT
+import os
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
